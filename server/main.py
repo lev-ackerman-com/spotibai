@@ -1,8 +1,9 @@
 """Spotibai server: manipis na API sa ibabaw ng ytmusicapi.
 
 GET /           -> health check
-GET /home       -> mga rows para sa Home (Top, OPM, Bago, ...). Naka-cache sa memory ng 30 min.
-GET /search?q=  -> listahan ng mga kanta. Naka-cache ng 15 min.
+GET /home       -> mga rows para sa Music tab. Naka-cache sa memory ng 30 min.
+GET /videos     -> mga rows para sa Video tab. Naka-cache ng 30 min.
+GET /search?q=&type=songs|videos -> listahan ng kanta o video. Naka-cache ng 15 min.
 """
 import re
 import threading
@@ -93,6 +94,10 @@ def search_songs(q, limit=20):
     return clean(yt.search(q, filter="songs", limit=limit), limit)
 
 
+def search_videos(q, limit=20):
+    return clean(yt.search(q, filter="videos", limit=limit), limit)
+
+
 def top_charts():
     """Chart playlist ng bansa -> mga kanta. Fallback: search."""
     try:
@@ -112,19 +117,32 @@ def q(query):
     return lambda: search_songs(query)
 
 
-# Dito mo dagdagan/baguhin ang mga rows sa Home.
+def vq(query):
+    return lambda: search_videos(query)
+
+
+# Dito mo dagdagan/baguhin ang mga rows. (English ang mga pamagat dahil ito ang lalabas sa app.)
 ROWS = [
-    {"id": "top", "title": "Top ngayon sa Pilipinas", "fn": top_charts},
+    {"id": "top", "title": "Top Hits in the Philippines", "fn": top_charts},
     {"id": "opm", "title": "OPM Hits", "fn": q("OPM hits")},
-    {"id": "new", "title": "Bagong labas", "fn": q("new songs this week")},
-    {"id": "rated", "title": "Top rated all-time", "fn": q("greatest songs of all time")},
-    {"id": "pinoyrock", "title": "Pinoy Rock", "fn": q("pinoy rock classics")},
-    {"id": "hugot", "title": "Hugot at Ballads", "fn": q("OPM love songs ballad")},
-    {"id": "chill", "title": "Chill vibes", "fn": q("chill songs")},
+    {"id": "new", "title": "New Releases", "fn": q("new songs this week")},
+    {"id": "rated", "title": "Highest Rated of All Time", "fn": q("greatest songs of all time")},
+    {"id": "pinoyrock", "title": "Pinoy Rock Classics", "fn": q("pinoy rock classics")},
+    {"id": "hugot", "title": "Hugot & Ballads", "fn": q("OPM love songs ballad")},
+    {"id": "chill", "title": "Chill Vibes", "fn": q("chill songs")},
+]
+
+VIDEO_ROWS = [
+    {"id": "v-top", "title": "Trending Videos", "fn": vq("top music videos Philippines")},
+    {"id": "v-opm", "title": "OPM Music Videos", "fn": vq("OPM official music video")},
+    {"id": "v-live", "title": "Live Performances", "fn": vq("OPM live performance")},
+    {"id": "v-lyric", "title": "Lyric Videos", "fn": vq("OPM lyric video")},
+    {"id": "v-new", "title": "New Music Videos", "fn": vq("new music video this week")},
+    {"id": "v-rock", "title": "Pinoy Rock Live", "fn": vq("pinoy rock live")},
 ]
 
 
-def build_home():
+def build_rows(rows_def):
     def run(row):
         try:
             tracks = row["fn"]()
@@ -132,8 +150,8 @@ def build_home():
             tracks = []
         return {"id": row["id"], "title": row["title"], "tracks": tracks}
 
-    with ThreadPoolExecutor(max_workers=len(ROWS)) as ex:
-        rows = list(ex.map(run, ROWS))
+    with ThreadPoolExecutor(max_workers=len(rows_def)) as ex:
+        rows = list(ex.map(run, rows_def))
     return [r for r in rows if r["tracks"]]
 
 
@@ -147,10 +165,17 @@ def root():
 
 @app.get("/home")
 def home():
-    return {"rows": cached("home", HOME_TTL, build_home) or []}
+    return {"rows": cached("home", HOME_TTL, lambda: build_rows(ROWS)) or []}
+
+
+@app.get("/videos")
+def videos():
+    return {"rows": cached("videos", HOME_TTL, lambda: build_rows(VIDEO_ROWS)) or []}
 
 
 @app.get("/search")
-def search(q: str = Query(..., min_length=1)):
+def search(q: str = Query(..., min_length=1), type: str = Query("songs")):
     query = q.strip()
-    return cached("search:" + query.lower(), SEARCH_TTL, lambda: search_songs(query)) or []
+    kind = "videos" if type == "videos" else "songs"
+    fn = search_videos if kind == "videos" else search_songs
+    return cached(f"search:{kind}:{query.lower()}", SEARCH_TTL, lambda: fn(query)) or []
